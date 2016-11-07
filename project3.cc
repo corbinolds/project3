@@ -16,19 +16,36 @@
 
 simulator *simulation;
 
+// 
+char buffer[1000][20];
+int sequenceNum = 0;
+int alreadyAckd = 0;
+int ackNumber = 1;
+
 /* called from layer 5, passed the data to be sent to other side */
 void A_output(struct msg message)
 {
+	for(int i = 0; i < sizeof(message.data); i++) {
+		buffer[sequenceNum][i] = message.data[i];
+	}
+	
   std::cout << "A side has recieved a message from the application that should be sent to side B: " << message.data << std::endl;
   
-  pkt packet;
+  if (alreadyAckd <= sequenceNum) {
+  	pkt packet;
   
-  for(int i = 0; i < sizeof(message.data); i++) {
-  	packet.payload[i] = message.data[i];
+  	packet.seqnum = sequenceNum;
+  
+  	std::cout << "SEQ NUM: " << packet.seqnum << std::endl;
+  
+  	for(int i = 0; i < sizeof(message.data); i++) {
+  		packet.payload[i] = message.data[i];
+  	}
+  
+  	simulation->tolayer3(A, packet);
+  	
+  	sequenceNum++;
   }
-  
-  simulation->tolayer3(A, packet);
-
 }
 
 void B_output(struct msg message)  /* need be completed only for extra credit */
@@ -41,6 +58,17 @@ void B_output(struct msg message)  /* need be completed only for extra credit */
 void A_input(struct pkt packet)
 {
   std::cout << "A side has recieved a packet sent over the network from side B:" << packet.payload << std::endl;
+	std::cout << "ACK NUM: " << packet.acknum << std::endl;
+	
+	if (packet.acknum == sequenceNum + 1) {
+		alreadyAckd = sequenceNum;	
+
+  }
+  else if(packet.acknum > sequenceNum + 1) {
+  	alreadyAckd = sequenceNum;
+  
+  	sequenceNum = packet.acknum;
+  }
 
 }
 
@@ -64,13 +92,31 @@ void B_input(struct pkt packet)
 {
     std::cout << "B side has recieved a packet sent over the network from side A:" << packet.payload << std::endl;
     
-    //pkt packet;
-	  
-	//for(int i = 0; i < sizeof(message.data); i++) {
-	//	packet.payload[i] = message.data[i];
-	//}
-	  
-	simulation->tolayer3(B, packet);
+    pkt ackPacket;
+    
+    if(ackNumber == packet.seqnum + 1) {
+		 	ackPacket.acknum = packet.seqnum + 1;
+		 	
+		 	std:: cout << "SEQ NUM: " << packet.seqnum << std::endl;
+		 	std:: cout << "ACK NUM: " << ackPacket.acknum << std::endl;
+			
+			
+			simulation->tolayer3(B, ackPacket);
+			ackNumber++;
+		}
+		// else if seqnum doens't match next ack, resend the last ack
+		else {
+			ackPacket.acknum = ackNumber;
+			
+			if(ackNumber < packet.seqnum + 1) {
+				std:: cout << "MISSING A PACKET. RESENDING LAST ACK" << std::endl;
+			}else {
+				std:: cout << "PACKET ALREADY ACKD" << std::endl;
+			}
+
+			simulation->tolayer3(B, ackPacket);
+			//don't increment ackNumber because B is either missing a packet or has already sent an ack for a packet
+		}
 }
 
 /* called when B's timer goes off */
