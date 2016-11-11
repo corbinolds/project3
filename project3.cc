@@ -15,15 +15,25 @@
 **********************************************************************/
 
 simulator *simulation;
+char buffer[1000][20]; 		//message data buffer
+int sequenceNum = 0; 		//current sequenceNum for A
+int catchUpSequenceNum = 0; 	//used to resend all packets up to the one that it was last trying to before failing/timer interrupting
+int sequenceNumTimerTrack = 0; 	//keeps track of which sequence number was being sent when the timer is started.
+bool aTimerRunning = false;	//used to keep track of whether or not the timer is running.
+int alreadyAckd = 0;		//furthest packet ackd so far
+int ackNumber = 1;		//keeps track of current ackNum for B
 
-// 
-char buffer[1000][20];
-int sequenceNum = 0;
-int sequenceNumTimerTrack = 0;
-bool aTimerRunning = false;
-
-int alreadyAckd = 0;
-int ackNumber = 1;
+// cast the payload into integers and add that with the sequence number for A to B transfer.
+int calcCheckSum (pkt packet) {
+	int checkSum = 0;
+	for (int i = 0; i < sizeof(packet.payload); i++) {
+		checkSum += (int)packet.payload[i];
+	}
+	
+	checkSum = checkSum + packet.seqnum + packet.acknum;
+	
+	return checkSum;
+}
 
 /* called from layer 5, passed the data to be sent to other side */
 void A_output(struct msg message)
@@ -33,28 +43,67 @@ void A_output(struct msg message)
 	}
 	
  	std::cout << "A side has recieved a message from the application that should be sent to side B: " << message.data << std::endl;
-  
 
 	pkt packet;
 	  
 	packet.seqnum = sequenceNum;
-	  
+	
+	//ack num doesn't matter for this so set it to 0
+	packet.acknum = 0;
+		  
 	std::cout << "SEQ NUM: " << packet.seqnum << std::endl;
-	  
-	for(int i = 0; i < sizeof(message.data); i++) {
-		packet.payload[i] = message.data[i];
+		  
+	for(int i = 0; i < sizeof(buffer[sequenceNum]); i++) {
+		packet.payload[i] = buffer[sequenceNum][i];
 	}
-	  
+	
+	int checkSum = calcCheckSum(packet);
+	packet.checksum = checkSum;
+		  
 	if(!aTimerRunning) {
 		sequenceNumTimerTrack = sequenceNum;
-		simulation->starttimer(A, 1005.00);
+		simulation->starttimer(A, 150.00);
 		aTimerRunning = true;
 	}
 	simulation->tolayer3(A, packet);
-	  	
-	  	
-  	sequenceNum++;
+		  	
+	catchUpSequenceNum = sequenceNum;	  	
+	sequenceNum++;
+}
 
+// Used to retry sending all packets up to the packet it most recently sent before failure/timer interrupt
+void Reoutput_A(struct msg message)
+{
+	std::cout << "A side is retrying to send to side B: " << message.data << std::endl;
+
+	while(sequenceNum < catchUpSequenceNum) {
+		pkt packet;
+	  
+		packet.seqnum = sequenceNum;
+	
+		//ack num doesn't matter for this so set it to 0
+		packet.acknum = 0;
+		  
+		std::cout << "SEQ NUM: " << packet.seqnum << std::endl;
+		  
+		for(int i = 0; i < sizeof(buffer[sequenceNum]); i++) {
+			packet.payload[i] = buffer[sequenceNum][i];
+		}
+	
+		int checkSum = calcCheckSum(packet);
+	
+		packet.checksum = checkSum;
+		  
+		if(!aTimerRunning) {
+			sequenceNumTimerTrack = sequenceNum;
+			simulation->starttimer(A, 150.00);
+			aTimerRunning = true;
+		}
+		simulation->tolayer3(A, packet);
+		  	
+		  	
+	  	sequenceNum++;
+	}
 }
 
 void B_output(struct msg message)  /* need be completed only for extra credit */
@@ -69,21 +118,55 @@ void A_input(struct pkt packet)
 	std::cout << "A side has recieved a packet sent over the network from side B:" << packet.payload << std::endl;
 	std::cout << "ACK NUM: " << packet.acknum << std::endl;
 	
-	if (sequenceNumTimerTrack == packet.acknum - 1) {
-		simulation->stoptimer(A);
-		aTimerRunning = false;
-	}
+	int checkSumFromB = calcCheckSum(packet);
 	
-	if (packet.acknum == sequenceNum + 1) {
-		alreadyAckd = sequenceNum;	
-
+	// if B to A was corrupt, resend the packet after the one that was last ackd
+	if(checkSumFromB != packet.checksum) {
+		catchUpSequenceNum = sequenceNum;
+		sequenceNum = alreadyAckd;
+		msg message;
+		
+		std:: cout << "DATA CORRUPT. RESENDING LAST PACKET" << std::endl;		
+		
+		for(int i = 0; i < sizeof(buffer[sequenceNum]); i++) {
+			message.data[i] = buffer[sequenceNum][i];
+		}
+		
+		Reoutput_A(message);
 	}
-	else if(packet.acknum > sequenceNum + 1) {
-		alreadyAckd = sequenceNum;
-  
-  		sequenceNum = packet.acknum;
-  	}
-
+	// if not corrupt, proceed as normal
+	else {	
+		if (sequenceNumTimerTrack <= packet.acknum - 1) {
+			simulation->stoptimer(A);
+			aTimerRunning = false;
+		}
+		
+		if (sequenceNum < packet.acknum) {
+			sequenceNum = packet.acknum;
+			catchUpSequenceNum = sequenceNum;
+		}
+	
+		//keep track of packets already ackd
+		if (packet.acknum > alreadyAckd) {
+			alreadyAckd = packet.acknum;	
+		}
+	  	
+	 	else if(packet.acknum <= alreadyAckd) {
+	  		msg message;
+		
+			std:: cout << "ALREADY ACKED PACKET, RESENDING LAST PACKET" << std::endl;
+			
+			catchUpSequenceNum = sequenceNum;
+			sequenceNum = packet.acknum;		
+		
+			for(int i = 0; i < sizeof(buffer[sequenceNum]); i++) {
+				message.data[i] = buffer[sequenceNum][i];
+			}
+		
+			Reoutput_A(message);	
+	  		
+	  	}
+	}
 }
 
 
@@ -92,6 +175,7 @@ void A_timerinterrupt()
 {	
 	aTimerRunning = false;
 	msg message;
+	catchUpSequenceNum = sequenceNum;
 	sequenceNum = sequenceNumTimerTrack;
 	
 	for(int i = 0; i < sizeof(buffer[sequenceNum]); i++) {
@@ -100,7 +184,7 @@ void A_timerinterrupt()
 	
 	std::cout << "Side A's timer has gone off " << std::endl;
   
-  	A_output(message);
+  	Reoutput_A(message);
 }  
 
 /* the following routine will be called once (only) before any other */
@@ -114,34 +198,67 @@ void A_init()
 void B_input(struct pkt packet)
 {
 	std::cout << "B side has recieved a packet sent over the network from side A:" << packet.payload << std::endl;
-    
+	
+	int checkSumFromA = calcCheckSum(packet);
+	
 	pkt ackPacket;
-    
-	if(ackNumber == packet.seqnum + 1) {
-	 	ackPacket.acknum = ackNumber;
-	 	
-	 	std:: cout << "SEQ NUM: " << packet.seqnum << std::endl;
-	 	std:: cout << "ACK NUM: " << ackPacket.acknum << std::endl;
+	
+	//seqnum doesn't matter for b to a
+	ackPacket.seqnum = 0;
+	
+	//if packet received from A is not corrupt
+	if(checkSumFromA == packet.checksum) {
+	    
+		if(ackNumber == packet.seqnum + 1) {
+		 	ackPacket.acknum = ackNumber;
+		 	
+		 	int checkSumToA = calcCheckSum(ackPacket);
+			
+			ackPacket.checksum = checkSumToA;
+		 	
+		 	std:: cout << "SEQ NUM: " << packet.seqnum << std::endl;
+		 	std:: cout << "ACK NUM: " << ackPacket.acknum << std::endl;
 		
+			simulation->tolayer5(B, packet.payload);
+			simulation->tolayer3(B, ackPacket);
+			ackNumber++;
+		}
+		// else if seqnum doens't match next ack, resend the last ack
+		else {
+			ackPacket.acknum = ackNumber - 1;
+			
+			int checkSumToA = calcCheckSum(ackPacket);
+			
+			ackPacket.checksum = checkSumToA;
+			
+			if(ackNumber < packet.seqnum + 1) {
+				std:: cout << "MISSING A PACKET. RESENDING LAST ACK" << std::endl;
+			}else {
+				std:: cout << "PACKET ALREADY ACKD. RESENDING LAST ACK" << std::endl;
+			}
 		
-		simulation->tolayer3(B, ackPacket);
-		ackNumber++;
+			std:: cout << "SEQ NUM: " << packet.seqnum << std::endl;
+		 	std:: cout << "ACK NUM: " << ackPacket.acknum << std::endl;
+
+			simulation->tolayer3(B, ackPacket);
+			//don't increment ackNumber because B is either missing a packet or has already sent an ack for a packet
+		}
 	}
-	// else if seqnum doens't match next ack, resend the last ack
+	//if corrupt, send last ack
 	else {
 		ackPacket.acknum = ackNumber - 1;
-			
-		if(ackNumber < packet.seqnum + 1) {
-			std:: cout << "MISSING A PACKET. RESENDING LAST ACK" << std::endl;
-		}else {
-			std:: cout << "PACKET ALREADY ACKD" << std::endl;
-		}
 		
-		std:: cout << "SEQ NUM: " << packet.seqnum << std::endl;
-	 	std:: cout << "ACK NUM: " << ackPacket.acknum << std::endl;
-
+		int checkSumToA = calcCheckSum(ackPacket);
+			
+		ackPacket.checksum = checkSumToA;
+		
+		std:: cout << "DATA CORRUPT. RESENDING LAST ACK" << std::endl;
+		
+		std:: cout << "(corrupt) SEQ NUM: " << packet.seqnum << std::endl;
+		std:: cout << "(corrupt) DATA: " << packet.payload << std::endl;
+		std:: cout << "ACK NUM: " << ackPacket.acknum << std::endl;
+		
 		simulation->tolayer3(B, ackPacket);
-		//don't increment ackNumber because B is either missing a packet or has already sent an ack for a packet
 	}
 }
 
