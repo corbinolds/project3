@@ -130,6 +130,8 @@ void B_input(struct pkt packet)
 	// else if seqnum doens't match next ack, resend the last ack
 	else {
 		ackPacket.acknum = ackNumber - 1;
+		
+		
 			
 		if(ackNumber < packet.seqnum + 1) {
 			std:: cout << "MISSING A PACKET. RESENDING LAST ACK" << std::endl;
